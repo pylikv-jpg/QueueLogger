@@ -23,20 +23,25 @@ class QueueDatabase(
             "queue_logger.db"
 
         /**
-         * Версия 2:
+         * Версия 3:
          *
-         * добавлена таблица queue_samples,
-         * которая хранит размер очереди
-         * при каждом опросе.
+         * добавлена таблица vehicle_events.
+         *
+         * Старые таблицы НЕ удаляем,
+         * поэтому уже собранная статистика
+         * остаётся на телефоне.
          */
         private const val DATABASE_VERSION =
-            2
+            3
 
         private const val TABLE_MOVEMENTS =
             "vehicle_movements"
 
         private const val TABLE_QUEUE_SAMPLES =
             "queue_samples"
+
+        private const val TABLE_VEHICLE_EVENTS =
+            "vehicle_events"
 
         /*
          * Общие поля.
@@ -47,15 +52,18 @@ class QueueDatabase(
         private const val COLUMN_CHECKPOINT_ID =
             "checkpoint_id"
 
+        private const val COLUMN_CHECKPOINT_NAME =
+            "checkpoint_name"
+
         private const val COLUMN_TIMESTAMP =
             "timestamp"
 
-        /*
-         * Поля movement.
-         */
         private const val COLUMN_REGISTRATION_NUMBER =
             "registration_number"
 
+        /*
+         * Старый movement.
+         */
         private const val COLUMN_PREVIOUS_POSITION =
             "previous_position"
 
@@ -66,11 +74,8 @@ class QueueDatabase(
             "status"
 
         /*
-         * Поля queue sample.
+         * Поля минутного снимка.
          */
-        private const val COLUMN_CHECKPOINT_NAME =
-            "checkpoint_name"
-
         private const val COLUMN_TOTAL_COUNT =
             "total_count"
 
@@ -85,6 +90,30 @@ class QueueDatabase(
 
         private const val COLUMN_MOTORCYCLE_COUNT =
             "motorcycle_count"
+
+        /*
+         * Поля полного события автомобиля.
+         */
+        private const val COLUMN_EVENT_TYPE =
+            "event_type"
+
+        private const val COLUMN_VEHICLE_TYPE =
+            "vehicle_type"
+
+        private const val COLUMN_TYPE_QUEUE =
+            "type_queue"
+
+        private const val COLUMN_PREVIOUS_STATUS =
+            "previous_status"
+
+        private const val COLUMN_CURRENT_STATUS =
+            "current_status"
+
+        private const val COLUMN_REGISTRATION_DATE =
+            "registration_date"
+
+        private const val COLUMN_CHANGED_DATE =
+            "changed_date"
     }
 
     override fun onCreate(
@@ -98,24 +127,41 @@ class QueueDatabase(
         createQueueSampleTable(
             db
         )
+
+        createVehicleEventTable(
+            db
+        )
     }
 
-    /**
-     * Если приложение уже успело создать
-     * базу версии 1, просто добавляем
-     * новую таблицу статистики.
-     */
     override fun onUpgrade(
         db: SQLiteDatabase,
         oldVersion: Int,
         newVersion: Int
     ) {
 
+        /*
+         * Версия 1 -> версия 2.
+         */
         if (
             oldVersion < 2
         ) {
 
             createQueueSampleTable(
+                db
+            )
+        }
+
+        /*
+         * Версия 1/2 -> версия 3.
+         *
+         * Только добавляем новую таблицу.
+         * Старые данные не удаляем.
+         */
+        if (
+            oldVersion < 3
+        ) {
+
+            createVehicleEventTable(
                 db
             )
         }
@@ -163,7 +209,7 @@ class QueueDatabase(
     }
 
     /**
-     * Один ряд этой таблицы =
+     * Один ряд =
      * один успешный опрос одного КПП.
      */
     private fun createQueueSampleTable(
@@ -199,10 +245,115 @@ class QueueDatabase(
     }
 
     /**
-     * Сохранить статистический снимок очереди.
+     * Полная история событий автомобилей.
      *
-     * Здесь не сохраняем повторно каждый автомобиль.
-     * Храним компактную информацию о размере очереди.
+     * Здесь хранятся:
+     *
+     * ARRIVAL
+     * MOVE
+     * STATUS_CHANGE
+     * CALLED
+     * DISAPPEARED
+     *
+     * А также:
+     * тип транспорта,
+     * type_queue,
+     * старая/новая позиция,
+     * старый/новый статус.
+     */
+    private fun createVehicleEventTable(
+        db: SQLiteDatabase
+    ) {
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS $TABLE_VEHICLE_EVENTS (
+                $COLUMN_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                $COLUMN_CHECKPOINT_ID TEXT NOT NULL,
+                $COLUMN_CHECKPOINT_NAME TEXT NOT NULL,
+                $COLUMN_REGISTRATION_NUMBER TEXT NOT NULL,
+                $COLUMN_VEHICLE_TYPE INTEGER,
+                $COLUMN_TYPE_QUEUE INTEGER,
+                $COLUMN_TIMESTAMP INTEGER NOT NULL,
+                $COLUMN_EVENT_TYPE TEXT NOT NULL,
+                $COLUMN_PREVIOUS_POSITION INTEGER,
+                $COLUMN_CURRENT_POSITION INTEGER,
+                $COLUMN_PREVIOUS_STATUS INTEGER,
+                $COLUMN_CURRENT_STATUS INTEGER,
+                $COLUMN_REGISTRATION_DATE TEXT,
+                $COLUMN_CHANGED_DATE TEXT
+            )
+            """.trimIndent()
+        )
+
+        /*
+         * Быстрый поиск событий
+         * одного КПП по времени.
+         */
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS
+            index_vehicle_event_checkpoint_time
+            ON $TABLE_VEHICLE_EVENTS (
+                $COLUMN_CHECKPOINT_ID,
+                $COLUMN_TIMESTAMP
+            )
+            """.trimIndent()
+        )
+
+        /*
+         * Быстрое восстановление
+         * всей траектории одной машины.
+         */
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS
+            index_vehicle_event_vehicle_time
+            ON $TABLE_VEHICLE_EVENTS (
+                $COLUMN_CHECKPOINT_ID,
+                $COLUMN_REGISTRATION_NUMBER,
+                $COLUMN_VEHICLE_TYPE,
+                $COLUMN_TIMESTAMP
+            )
+            """.trimIndent()
+        )
+
+        /*
+         * Для будущей статистики:
+         * отдельно легковые/грузовые
+         * и разные type_queue.
+         */
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS
+            index_vehicle_event_queue_type
+            ON $TABLE_VEHICLE_EVENTS (
+                $COLUMN_CHECKPOINT_ID,
+                $COLUMN_VEHICLE_TYPE,
+                $COLUMN_TYPE_QUEUE,
+                $COLUMN_TIMESTAMP
+            )
+            """.trimIndent()
+        )
+
+        /*
+         * Для быстрого поиска
+         * появлений и вызовов.
+         */
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS
+            index_vehicle_event_type_time
+            ON $TABLE_VEHICLE_EVENTS (
+                $COLUMN_EVENT_TYPE,
+                $COLUMN_TIMESTAMP
+            )
+            """.trimIndent()
+        )
+    }
+
+    /**
+     * Сохранить минутный снимок размера очереди.
      */
     fun saveQueueSample(
         snapshot: QueueSnapshot
@@ -285,6 +436,14 @@ class QueueDatabase(
                     busCount
                 )
 
+                /*
+                 * Пока оставляем число
+                 * мотоциклов в общем снимке
+                 * как исходную информацию.
+                 *
+                 * В прогностической модели
+                 * они использоваться не будут.
+                 */
                 put(
                     COLUMN_MOTORCYCLE_COUNT,
                     motorcycleCount
@@ -299,7 +458,7 @@ class QueueDatabase(
     }
 
     /**
-     * Сохранить одно движение.
+     * Сохранить одно старое movement.
      */
     fun saveMovement(
         movement: VehicleMovement
@@ -314,19 +473,13 @@ class QueueDatabase(
         )
     }
 
-    /**
-     * Сохранить список изменений
-     * одной транзакцией.
-     */
     fun saveMovements(
-        movements:
-            List<VehicleMovement>
+        movements: List<VehicleMovement>
     ) {
 
         if (
             movements.isEmpty()
         ) {
-
             return
         }
 
@@ -380,94 +533,219 @@ class QueueDatabase(
                 movement.timestamp
             )
 
-            if (
-                movement.previousPosition != null
-            ) {
+            putNullableInt(
+                COLUMN_PREVIOUS_POSITION,
+                movement.previousPosition
+            )
 
-                put(
-                    COLUMN_PREVIOUS_POSITION,
-                    movement.previousPosition
-                )
+            putNullableInt(
+                COLUMN_CURRENT_POSITION,
+                movement.currentPosition
+            )
 
-            } else {
-
-                putNull(
-                    COLUMN_PREVIOUS_POSITION
-                )
-            }
-
-            if (
-                movement.currentPosition != null
-            ) {
-
-                put(
-                    COLUMN_CURRENT_POSITION,
-                    movement.currentPosition
-                )
-
-            } else {
-
-                putNull(
-                    COLUMN_CURRENT_POSITION
-                )
-            }
-
-            if (
-                movement.status != null
-            ) {
-
-                put(
-                    COLUMN_STATUS,
-                    movement.status
-                )
-
-            } else {
-
-                putNull(
-                    COLUMN_STATUS
-                )
-            }
+            putNullableInt(
+                COLUMN_STATUS,
+                movement.status
+            )
         }
     }
 
     /**
-     * Общее количество сохранённых движений.
+     * Сохранить одно полное событие.
+     */
+    fun saveVehicleEvent(
+        event: VehicleEvent
+    ): Long {
+
+        /*
+         * Мотоциклы в новую
+         * прогностическую историю не записываем.
+         */
+        if (
+            event.vehicleType ==
+            QueueParser.VEHICLE_TYPE_MOTORCYCLE
+        ) {
+
+            return -1L
+        }
+
+        return writableDatabase.insert(
+            TABLE_VEHICLE_EVENTS,
+            null,
+            createVehicleEventValues(
+                event
+            )
+        )
+    }
+
+    /**
+     * Сохранить список событий
+     * одной транзакцией.
+     */
+    fun saveVehicleEvents(
+        events: List<VehicleEvent>
+    ) {
+
+        val filteredEvents =
+            events.filter {
+                it.vehicleType !=
+                    QueueParser.VEHICLE_TYPE_MOTORCYCLE
+            }
+
+        if (
+            filteredEvents.isEmpty()
+        ) {
+            return
+        }
+
+        val db =
+            writableDatabase
+
+        db.beginTransaction()
+
+        try {
+
+            for (
+                event in
+                filteredEvents
+            ) {
+
+                db.insert(
+                    TABLE_VEHICLE_EVENTS,
+                    null,
+                    createVehicleEventValues(
+                        event
+                    )
+                )
+            }
+
+            db.setTransactionSuccessful()
+
+        } finally {
+
+            db.endTransaction()
+        }
+    }
+
+    private fun createVehicleEventValues(
+        event: VehicleEvent
+    ): ContentValues {
+
+        return ContentValues().apply {
+
+            put(
+                COLUMN_CHECKPOINT_ID,
+                event.checkpointId
+            )
+
+            put(
+                COLUMN_CHECKPOINT_NAME,
+                event.checkpointName
+            )
+
+            put(
+                COLUMN_REGISTRATION_NUMBER,
+                event.registrationNumber
+            )
+
+            putNullableInt(
+                COLUMN_VEHICLE_TYPE,
+                event.vehicleType
+            )
+
+            /*
+             * type_queue сохраняем
+             * без интерпретации.
+             *
+             * Позже по реальным данным
+             * определим обычную
+             * и приоритетную очередь.
+             */
+            putNullableInt(
+                COLUMN_TYPE_QUEUE,
+                event.typeQueue
+            )
+
+            put(
+                COLUMN_TIMESTAMP,
+                event.timestamp
+            )
+
+            put(
+                COLUMN_EVENT_TYPE,
+                event.eventType.name
+            )
+
+            putNullableInt(
+                COLUMN_PREVIOUS_POSITION,
+                event.previousPosition
+            )
+
+            putNullableInt(
+                COLUMN_CURRENT_POSITION,
+                event.currentPosition
+            )
+
+            putNullableInt(
+                COLUMN_PREVIOUS_STATUS,
+                event.previousStatus
+            )
+
+            putNullableInt(
+                COLUMN_CURRENT_STATUS,
+                event.currentStatus
+            )
+
+            putNullableString(
+                COLUMN_REGISTRATION_DATE,
+                event.registrationDate
+            )
+
+            putNullableString(
+                COLUMN_CHANGED_DATE,
+                event.changedDate
+            )
+        }
+    }
+
+    /**
+     * Количество старых записей движения.
      */
     fun getMovementCount(): Long {
 
-        readableDatabase.rawQuery(
-            """
-            SELECT COUNT(*)
-            FROM $TABLE_MOVEMENTS
-            """.trimIndent(),
-            null
-        ).use {
-            cursor ->
-
-            return if (
-                cursor.moveToFirst()
-            ) {
-
-                cursor.getLong(
-                    0
-                )
-
-            } else {
-
-                0L
-            }
-        }
+        return getTableRowCount(
+            TABLE_MOVEMENTS
+        )
     }
 
     /**
-     * Количество минутных снимков очередей.
+     * Количество минутных снимков.
      */
     fun getQueueSampleCount(): Long {
 
+        return getTableRowCount(
+            TABLE_QUEUE_SAMPLES
+        )
+    }
+
+    /**
+     * Количество полных событий.
+     */
+    fun getVehicleEventCount(): Long {
+
+        return getTableRowCount(
+            TABLE_VEHICLE_EVENTS
+        )
+    }
+
+    private fun getTableRowCount(
+        tableName: String
+    ): Long {
+
         readableDatabase.rawQuery(
             """
             SELECT COUNT(*)
-            FROM $TABLE_QUEUE_SAMPLES
+            FROM $tableName
             """.trimIndent(),
             null
         ).use {
@@ -489,7 +767,7 @@ class QueueDatabase(
     }
 
     /**
-     * Последние движения автомобилей.
+     * Последние старые движения.
      */
     fun getRecentMovements(
         limit: Int = 100
@@ -505,6 +783,7 @@ class QueueDatabase(
             mutableListOf<VehicleMovement>()
 
         readableDatabase.query(
+
             TABLE_MOVEMENTS,
 
             arrayOf(
@@ -564,7 +843,6 @@ class QueueDatabase(
 
                 result +=
                     VehicleMovement(
-
                         checkpointId =
                             cursor.getString(
                                 checkpointIndex
@@ -581,56 +859,90 @@ class QueueDatabase(
                             ),
 
                         previousPosition =
-                            if (
-                                cursor.isNull(
-                                    previousPositionIndex
-                                )
-                            ) {
-
-                                null
-
-                            } else {
-
-                                cursor.getInt(
-                                    previousPositionIndex
-                                )
-                            },
+                            cursor.getNullableInt(
+                                previousPositionIndex
+                            ),
 
                         currentPosition =
-                            if (
-                                cursor.isNull(
-                                    currentPositionIndex
-                                )
-                            ) {
-
-                                null
-
-                            } else {
-
-                                cursor.getInt(
-                                    currentPositionIndex
-                                )
-                            },
+                            cursor.getNullableInt(
+                                currentPositionIndex
+                            ),
 
                         status =
-                            if (
-                                cursor.isNull(
-                                    statusIndex
-                                )
-                            ) {
-
-                                null
-
-                            } else {
-
-                                cursor.getInt(
-                                    statusIndex
-                                )
-                            }
+                            cursor.getNullableInt(
+                                statusIndex
+                            )
                     )
             }
         }
 
         return result
+    }
+
+    /**
+     * Вспомогательные функции для NULL.
+     */
+    private fun ContentValues.putNullableInt(
+        key: String,
+        value: Int?
+    ) {
+
+        if (
+            value == null
+        ) {
+
+            putNull(
+                key
+            )
+
+        } else {
+
+            put(
+                key,
+                value
+            )
+        }
+    }
+
+    private fun ContentValues.putNullableString(
+        key: String,
+        value: String?
+    ) {
+
+        if (
+            value == null
+        ) {
+
+            putNull(
+                key
+            )
+
+        } else {
+
+            put(
+                key,
+                value
+            )
+        }
+    }
+
+    private fun android.database.Cursor.getNullableInt(
+        columnIndex: Int
+    ): Int? {
+
+        return if (
+            isNull(
+                columnIndex
+            )
+        ) {
+
+            null
+
+        } else {
+
+            getInt(
+                columnIndex
+            )
+        }
     }
 }
