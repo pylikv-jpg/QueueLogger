@@ -15,7 +15,7 @@ import androidx.core.app.NotificationManagerCompat
 /**
  * Постоянный foreground service QueueLogger.
  *
- * Он поддерживает сбор данных независимо
+ * Поддерживает сбор данных независимо
  * от того, открыт экран приложения или нет.
  */
 class QueueLoggerService : Service() {
@@ -104,6 +104,7 @@ class QueueLoggerService : Service() {
                     startCollection(
                         checkpoints
                     )
+
                 } else {
 
                     val savedCheckpoints =
@@ -128,11 +129,7 @@ class QueueLoggerService : Service() {
 
                 /*
                  * Android может восстановить сервис
-                 * после уничтожения процесса
-                 * и передать null Intent.
-                 *
-                 * В таком случае восстанавливаем
-                 * последний сохранённый список КПП.
+                 * после уничтожения процесса.
                  */
                 val savedCheckpoints =
                     loadSavedCheckpoints()
@@ -156,8 +153,7 @@ class QueueLoggerService : Service() {
     }
 
     /**
-     * Переводим сервис в foreground
-     * сразу после запуска.
+     * Перевод сервиса в foreground.
      */
     private fun startForegroundMode() {
 
@@ -186,7 +182,7 @@ class QueueLoggerService : Service() {
     }
 
     /**
-     * Запустить минутный цикл опроса.
+     * Запуск минутного цикла.
      */
     private fun startCollection(
         checkpoints: List<Checkpoint>
@@ -217,9 +213,7 @@ class QueueLoggerService : Service() {
                             result.vehicleCount
                         )
 
-                        append(
-                            " авто"
-                        )
+                        append(" авто")
 
                         if (
                             result.movementCount > 0
@@ -264,7 +258,7 @@ class QueueLoggerService : Service() {
     }
 
     /**
-     * Полностью остановить сбор.
+     * Остановить сбор.
      */
     private fun stopCollection() {
 
@@ -285,7 +279,7 @@ class QueueLoggerService : Service() {
     }
 
     /**
-     * Уведомление foreground service.
+     * Постоянное уведомление сервиса.
      */
     private fun buildNotification(
         text: String
@@ -374,7 +368,7 @@ class QueueLoggerService : Service() {
     }
 
     /**
-     * Обновить текст постоянного уведомления.
+     * Обновление уведомления.
      */
     private fun updateNotification(
         text: String
@@ -396,17 +390,14 @@ class QueueLoggerService : Service() {
         ) {
 
             /*
-             * На Android 13+ пользователь
-             * может запретить обычные уведомления.
-             *
-             * Сам foreground service при этом
-             * не должен аварийно завершаться.
+             * Пользователь может запретить
+             * обычные уведомления.
              */
         }
     }
 
     /**
-     * Создание канала уведомлений.
+     * Канал уведомлений.
      */
     private fun createNotificationChannel() {
 
@@ -449,7 +440,7 @@ class QueueLoggerService : Service() {
     }
 
     /**
-     * Получить список КПП из Intent.
+     * Получить КПП из Intent.
      */
     private fun readCheckpointsFromIntent(
         intent: Intent
@@ -500,9 +491,7 @@ class QueueLoggerService : Service() {
     }
 
     /**
-     * Сохраняем выбранные КПП,
-     * чтобы восстановить сервис
-     * после уничтожения процесса.
+     * Сохранить выбранные КПП.
      */
     private fun saveCheckpoints(
         checkpoints: List<Checkpoint>
@@ -541,7 +530,7 @@ class QueueLoggerService : Service() {
     }
 
     /**
-     * Восстановить последний список КПП.
+     * Восстановить список КПП.
      */
     private fun loadSavedCheckpoints():
         List<Checkpoint> {
@@ -609,6 +598,10 @@ class QueueLoggerService : Service() {
         }
     }
 
+    /**
+     * Удалить сохранённый список КПП
+     * при ручной остановке.
+     */
     private fun clearSavedCheckpoints() {
 
         getSharedPreferences(
@@ -617,4 +610,25 @@ class QueueLoggerService : Service() {
         )
             .edit()
             .clear()
-           
+            .apply()
+    }
+
+    override fun onDestroy() {
+
+        if (
+            ::pollingManager.isInitialized
+        ) {
+
+            pollingManager.stop()
+        }
+
+        super.onDestroy()
+    }
+
+    override fun onBind(
+        intent: Intent?
+    ): IBinder? {
+
+        return null
+    }
+}
