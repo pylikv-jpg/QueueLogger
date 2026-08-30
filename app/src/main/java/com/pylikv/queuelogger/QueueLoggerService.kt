@@ -15,7 +15,7 @@ import androidx.core.app.NotificationManagerCompat
 /**
  * Постоянный foreground service QueueLogger.
  *
- * Поддерживает сбор данных независимо
+ * Сбор данных продолжается независимо
  * от того, открыт экран приложения или нет.
  */
 class QueueLoggerService : Service() {
@@ -93,7 +93,9 @@ class QueueLoggerService : Service() {
                         intent
                     )
 
-                if (checkpoints.isNotEmpty()) {
+                if (
+                    checkpoints.isNotEmpty()
+                ) {
 
                     saveCheckpoints(
                         checkpoints
@@ -110,7 +112,9 @@ class QueueLoggerService : Service() {
                     val savedCheckpoints =
                         loadSavedCheckpoints()
 
-                    if (savedCheckpoints.isNotEmpty()) {
+                    if (
+                        savedCheckpoints.isNotEmpty()
+                    ) {
 
                         startForegroundMode()
 
@@ -134,7 +138,9 @@ class QueueLoggerService : Service() {
                 val savedCheckpoints =
                     loadSavedCheckpoints()
 
-                if (savedCheckpoints.isNotEmpty()) {
+                if (
+                    savedCheckpoints.isNotEmpty()
+                ) {
 
                     startForegroundMode()
 
@@ -163,7 +169,9 @@ class QueueLoggerService : Service() {
                     "Сбор статистики активен"
             )
 
-        if (Build.VERSION.SDK_INT >= 34) {
+        if (
+            Build.VERSION.SDK_INT >= 34
+        ) {
 
             startForeground(
                 NOTIFICATION_ID,
@@ -182,13 +190,16 @@ class QueueLoggerService : Service() {
     }
 
     /**
-     * Запуск минутного цикла.
+     * Запуск постоянного цикла сбора.
      */
     private fun startCollection(
         checkpoints: List<Checkpoint>
     ) {
 
-        if (pollingManager.isRunning) {
+        if (
+            pollingManager.isRunning
+        ) {
+
             return
         }
 
@@ -201,6 +212,7 @@ class QueueLoggerService : Service() {
                 result ->
 
                 updateNotification(
+
                     buildString {
 
                         append(
@@ -213,14 +225,16 @@ class QueueLoggerService : Service() {
                             result.vehicleCount
                         )
 
-                        append(" авто")
+                        append(
+                            " авто"
+                        )
 
                         if (
                             result.movementCount > 0
                         ) {
 
                             append(
-                                ", изменений "
+                                " · изменений "
                             )
 
                             append(
@@ -229,7 +243,15 @@ class QueueLoggerService : Service() {
                         }
 
                         append(
-                            " · записей "
+                            "\nСнимков: "
+                        )
+
+                        append(
+                            result.totalStoredSamples
+                        )
+
+                        append(
+                            " · движений: "
                         )
 
                         append(
@@ -258,7 +280,7 @@ class QueueLoggerService : Service() {
     }
 
     /**
-     * Остановить сбор.
+     * Остановить сбор данных вручную.
      */
     private fun stopCollection() {
 
@@ -279,7 +301,7 @@ class QueueLoggerService : Service() {
     }
 
     /**
-     * Постоянное уведомление сервиса.
+     * Постоянное системное уведомление.
      */
     private fun buildNotification(
         text: String
@@ -368,7 +390,7 @@ class QueueLoggerService : Service() {
     }
 
     /**
-     * Обновление уведомления.
+     * Обновление системного уведомления.
      */
     private fun updateNotification(
         text: String
@@ -377,7 +399,9 @@ class QueueLoggerService : Service() {
         try {
 
             NotificationManagerCompat
-                .from(this)
+                .from(
+                    this
+                )
                 .notify(
                     NOTIFICATION_ID,
                     buildNotification(
@@ -397,7 +421,7 @@ class QueueLoggerService : Service() {
     }
 
     /**
-     * Канал уведомлений.
+     * Создать канал постоянного уведомления.
      */
     private fun createNotificationChannel() {
 
@@ -405,6 +429,7 @@ class QueueLoggerService : Service() {
             Build.VERSION.SDK_INT <
             Build.VERSION_CODES.O
         ) {
+
             return
         }
 
@@ -440,21 +465,26 @@ class QueueLoggerService : Service() {
     }
 
     /**
-     * Получить КПП из Intent.
+     * Получить список КПП,
+     * переданный из MainActivity.
      */
     private fun readCheckpointsFromIntent(
         intent: Intent
     ): List<Checkpoint> {
 
         val ids =
-            intent.getStringArrayListExtra(
-                EXTRA_CHECKPOINT_IDS
-            ).orEmpty()
+            intent
+                .getStringArrayListExtra(
+                    EXTRA_CHECKPOINT_IDS
+                )
+                .orEmpty()
 
         val names =
-            intent.getStringArrayListExtra(
-                EXTRA_CHECKPOINT_NAMES
-            ).orEmpty()
+            intent
+                .getStringArrayListExtra(
+                    EXTRA_CHECKPOINT_NAMES
+                )
+                .orEmpty()
 
         if (
             ids.isEmpty() ||
@@ -468,10 +498,12 @@ class QueueLoggerService : Service() {
             index ->
 
             val id =
-                ids[index].trim()
+                ids[index]
+                    .trim()
 
             val name =
-                names[index].trim()
+                names[index]
+                    .trim()
 
             if (
                 id.isBlank() ||
@@ -483,15 +515,19 @@ class QueueLoggerService : Service() {
             } else {
 
                 Checkpoint(
-                    id = id,
-                    name = name
+                    id =
+                        id,
+                    name =
+                        name
                 )
             }
         }
     }
 
     /**
-     * Сохранить выбранные КПП.
+     * Сохранить список КПП,
+     * чтобы Android мог восстановить сбор
+     * после уничтожения процесса.
      */
     private fun saveCheckpoints(
         checkpoints: List<Checkpoint>
@@ -530,7 +566,7 @@ class QueueLoggerService : Service() {
     }
 
     /**
-     * Восстановить список КПП.
+     * Восстановить сохранённый список КПП.
      */
     private fun loadSavedCheckpoints():
         List<Checkpoint> {
@@ -576,10 +612,12 @@ class QueueLoggerService : Service() {
             index ->
 
             val id =
-                ids[index].trim()
+                ids[index]
+                    .trim()
 
             val name =
-                names[index].trim()
+                names[index]
+                    .trim()
 
             if (
                 id.isBlank() ||
@@ -591,16 +629,18 @@ class QueueLoggerService : Service() {
             } else {
 
                 Checkpoint(
-                    id = id,
-                    name = name
+                    id =
+                        id,
+                    name =
+                        name
                 )
             }
         }
     }
 
     /**
-     * Удалить сохранённый список КПП
-     * при ручной остановке.
+     * Очистить сохранённое состояние
+     * только при ручной остановке.
      */
     private fun clearSavedCheckpoints() {
 
