@@ -12,11 +12,9 @@ class QueueCollector(
     context: Context
 ) {
 
-    private val api =
-        QueueApi()
+    private val api = QueueApi()
 
-    private val parser =
-        QueueParser()
+    private val parser = QueueParser()
 
     private val movementTracker =
         QueueMovementTracker()
@@ -27,82 +25,45 @@ class QueueCollector(
         )
 
     data class CollectionResult(
-
         val checkpointId: String,
-
         val checkpointName: String,
-
-        /**
-         * Сколько автомобилей сейчас
-         * находится в очереди.
-         */
         val vehicleCount: Int,
-
-        /**
-         * Сколько автомобилей изменили
-         * позицию или статус относительно
-         * предыдущего опроса.
-         */
         val movementCount: Int,
-
-        /**
-         * Общее количество сохранённых
-         * событий движения.
-         */
         val totalStoredMovements: Long,
-
-        /**
-         * Общее количество сохранённых
-         * минутных снимков очередей.
-         */
         val totalStoredSamples: Long,
-
         val timestamp: Long
     )
 
     /**
-     * Выполнить один опрос одного КПП.
+     * Один полный опрос одного КПП.
      */
     suspend fun collectOnce(
         checkpoint: Checkpoint
-    ): Result<CollectionResult> {
-
-        return withContext(
-            Dispatchers.IO
-        ) {
+    ): Result<CollectionResult> =
+        withContext(Dispatchers.IO) {
 
             try {
 
                 /*
-                 * 1. Получаем актуальный JSON.
+                 * 1. Получаем данные сервера.
                  */
-                val jsonResult =
+                val apiResult =
                     api.getMonitoring(
                         checkpointId =
                             checkpoint.id
                     )
 
-                if (
-                    jsonResult.isFailure
-                ) {
-
-                    return@withContext
-                        Result.failure(
-                            jsonResult
-                                .exceptionOrNull()
-                                ?: IllegalStateException(
-                                    "Неизвестная ошибка API"
-                                )
-                        )
-                }
-
+                /*
+                 * Если запрос завершился ошибкой,
+                 * выбрасываем её внутрь try.
+                 * Catch ниже преобразует её
+                 * обратно в Result.failure.
+                 */
                 val json =
-                    jsonResult
-                        .getOrThrow()
+                    apiResult.getOrThrow()
 
                 /*
-                 * 2. Формируем полный снимок
-                 * текущего состояния очереди.
+                 * 2. Разбираем полный снимок очереди.
                  */
                 val snapshot =
                     parser.parseSnapshot(
@@ -114,20 +75,19 @@ class QueueCollector(
                     )
 
                 /*
-                 * 3. Каждый успешный опрос
-                 * обязательно сохраняем
-                 * как компактный queue sample.
+                 * 3. Сохраняем компактный
+                 * минутный снимок очереди.
                  *
-                 * Даже если очередь не двигалась,
-                 * это важная статистическая информация.
+                 * Он сохраняется даже тогда,
+                 * когда автомобили не двигались.
                  */
                 database.saveQueueSample(
                     snapshot
                 )
 
                 /*
-                 * 4. Сравниваем с предыдущим снимком
-                 * и получаем только реальные изменения.
+                 * 4. Определяем изменения
+                 * относительно предыдущего опроса.
                  */
                 val movements =
                     movementTracker
@@ -136,14 +96,14 @@ class QueueCollector(
                         )
 
                 /*
-                 * 5. Сохраняем изменения автомобилей.
+                 * 5. Сохраняем движения.
                  */
                 database.saveMovements(
                     movements
                 )
 
                 /*
-                 * 6. Получаем общую статистику базы.
+                 * 6. Получаем общие счётчики.
                  */
                 val totalStoredMovements =
                     database
@@ -153,27 +113,23 @@ class QueueCollector(
                     database
                         .getQueueSampleCount()
 
+                /*
+                 * 7. Возвращаем результат опроса.
+                 */
                 Result.success(
                     CollectionResult(
-
                         checkpointId =
                             checkpoint.id,
-
                         checkpointName =
                             checkpoint.name,
-
                         vehicleCount =
                             snapshot.vehicleCount,
-
                         movementCount =
                             movements.size,
-
                         totalStoredMovements =
                             totalStoredMovements,
-
                         totalStoredSamples =
                             totalStoredSamples,
-
                         timestamp =
                             snapshot.timestamp
                     )
@@ -188,62 +144,47 @@ class QueueCollector(
                 )
             }
         }
-    }
 
     /**
      * Количество сохранённых движений.
      */
     suspend fun getStoredMovementCount():
-        Long {
-
-        return withContext(
-            Dispatchers.IO
-        ) {
+        Long =
+        withContext(Dispatchers.IO) {
 
             database
                 .getMovementCount()
         }
-    }
 
     /**
-     * Количество сохранённых снимков очередей.
+     * Количество сохранённых
+     * минутных снимков очереди.
      */
     suspend fun getStoredQueueSampleCount():
-        Long {
-
-        return withContext(
-            Dispatchers.IO
-        ) {
+        Long =
+        withContext(Dispatchers.IO) {
 
             database
                 .getQueueSampleCount()
         }
-    }
 
     /**
-     * Последние события движения.
+     * Последние движения автомобилей.
      */
     suspend fun getRecentMovements(
         limit: Int = 100
-    ): List<VehicleMovement> {
-
-        return withContext(
-            Dispatchers.IO
-        ) {
+    ): List<VehicleMovement> =
+        withContext(Dispatchers.IO) {
 
             database
                 .getRecentMovements(
                     limit
                 )
         }
-    }
 
     /**
-     * Сбросить временную точку сравнения
-     * только для одного КПП.
-     *
-     * Данные из SQLite при этом
-     * не удаляются.
+     * Сбросить точку сравнения одного КПП.
+     * История SQLite не удаляется.
      */
     fun resetCheckpoint(
         checkpointId: String
@@ -255,10 +196,8 @@ class QueueCollector(
     }
 
     /**
-     * Сбросить все временные
-     * точки сравнения.
-     *
-     * Историческая база сохраняется.
+     * Сбросить все временные точки сравнения.
+     * История SQLite остаётся.
      */
     fun resetAllTracking() {
 
