@@ -132,8 +132,8 @@ class QueueLoggerService : Service() {
             else -> {
 
                 /*
-                 * Android может восстановить сервис
-                 * после уничтожения процесса.
+                 * Android может восстановить
+                 * сервис после уничтожения процесса.
                  */
                 val savedCheckpoints =
                     loadSavedCheckpoints()
@@ -234,11 +234,24 @@ class QueueLoggerService : Service() {
                         ) {
 
                             append(
-                                " · изменений "
+                                " · движений "
                             )
 
                             append(
                                 result.movementCount
+                            )
+                        }
+
+                        if (
+                            result.eventCount > 0
+                        ) {
+
+                            append(
+                                " · событий "
+                            )
+
+                            append(
+                                result.eventCount
                             )
                         }
 
@@ -251,7 +264,15 @@ class QueueLoggerService : Service() {
                         )
 
                         append(
-                            " · движений: "
+                            " · событий: "
+                        )
+
+                        append(
+                            result.totalStoredEvents
+                        )
+
+                        append(
+                            "\nСтарых движений: "
                         )
 
                         append(
