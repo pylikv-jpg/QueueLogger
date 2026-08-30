@@ -13,33 +13,29 @@ class QueueMovementTracker {
         mutableMapOf<String, QueueSnapshot>()
 
     /**
-     * Сколько последовательных успешных снимков
-     * автомобиль отсутствует.
+     * Автомобили, которые пропали из очереди,
+     * но исчезновение ещё не подтверждено.
+     */
+    private data class MissingVehicle(
+        val vehicle: QueueVehicle,
+        val firstMissingTimestamp: Long,
+        val missingCount: Int
+    )
+
+    /**
+     * Ожидающие подтверждения исчезновения машины.
      *
      * Ключ:
      * checkpointId + номер + тип транспорта.
      */
-    private val missingCounts =
-        mutableMapOf<String, Int>()
-
-    /**
-     * Последнее известное состояние автомобиля.
-     *
-     * Оно необходимо, чтобы после второго
-     * отсутствия сохранить DISAPPEARED
-     * с последней известной позицией.
-     */
-    private val lastKnownVehicles =
-        mutableMapOf<String, QueueVehicle>()
+    private val missingVehicles =
+        mutableMapOf<String, MissingVehicle>()
 
     data class TrackingResult(
         val movements: List<VehicleMovement>,
         val events: List<VehicleEvent>
     )
 
-    /**
-     * Обработать очередной успешный снимок.
-     */
     fun processSnapshotDetailed(
         currentSnapshot: QueueSnapshot
     ): TrackingResult {
@@ -52,14 +48,18 @@ class QueueMovementTracker {
                 checkpointId
             ]
 
-        val events =
-            mutableListOf<VehicleEvent>()
-
         val movements =
             mutableListOf<VehicleMovement>()
 
+        val events =
+            mutableListOf<VehicleEvent>()
+
         val currentVehicles =
             currentSnapshot.vehicles
+                .filter {
+                    it.vehicleType !=
+                        QueueParser.VEHICLE_TYPE_MOTORCYCLE
+                }
                 .associateBy {
                     vehicleKey(
                         checkpointId,
@@ -68,49 +68,28 @@ class QueueMovementTracker {
                 }
 
         /*
-         * Первый снимок после запуска программы
-         * считаем исходной точкой наблюдения.
+         * Первый снимок после запуска.
          *
-         * Все находящиеся в нём автомобили
-         * фиксируем как ARRIVAL, потому что именно
-         * с этого момента QueueLogger начал
-         * наблюдать их траекторию.
+         * Мы не можем знать реальное время,
+         * когда уже находящиеся здесь автомобили
+         * вошли в очередь.
+         *
+         * Но фиксируем начало нашего наблюдения
+         * вместе с их текущей позицией.
          */
         if (previousSnapshot == null) {
 
             for (
                 vehicle in
-                currentSnapshot.vehicles
+                currentVehicles.values
             ) {
-
-                /*
-                 * Мотоциклы не включаем
-                 * в прогностическую историю.
-                 */
-                if (
-                    vehicle.vehicleType ==
-                    QueueParser.VEHICLE_TYPE_MOTORCYCLE
-                ) {
-                    continue
-                }
-
-                val key =
-                    vehicleKey(
-                        checkpointId,
-                        vehicle
-                    )
-
-                lastKnownVehicles[key] =
-                    vehicle
-
-                missingCounts.remove(
-                    key
-                )
 
                 events +=
                     createArrivalEvent(
-                        currentSnapshot,
-                        vehicle
+                        snapshot =
+                            currentSnapshot,
+                        vehicle =
+                            vehicle
                     )
             }
 
@@ -128,6 +107,10 @@ class QueueMovementTracker {
 
         val previousVehicles =
             previousSnapshot.vehicles
+                .filter {
+                    it.vehicleType !=
+                        QueueParser.VEHICLE_TYPE_MOTORCYCLE
+                }
                 .associateBy {
                     vehicleKey(
                         checkpointId,
@@ -136,24 +119,13 @@ class QueueMovementTracker {
                 }
 
         /*
-         * Сначала обрабатываем все автомобили,
-         * которые присутствуют сейчас.
+         * 1. Обрабатываем машины,
+         * которые есть в текущем снимке.
          */
         for (
             currentVehicle in
-            currentSnapshot.vehicles
+            currentVehicles.values
         ) {
-
-            /*
-             * Мотоциклы для статистики
-             * прогнозирования игнорируем.
-             */
-            if (
-                currentVehicle.vehicleType ==
-                QueueParser.VEHICLE_TYPE_MOTORCYCLE
-            ) {
-                continue
-            }
 
             val key =
                 vehicleKey(
@@ -162,12 +134,13 @@ class QueueMovementTracker {
                 )
 
             /*
-             * Если автомобиль снова виден,
-             * счётчик отсутствия обнуляем.
+             * Если автомобиль снова появился,
+             * отменяем ожидающее исчезновение.
              */
-            missingCounts.remove(
-                key
-            )
+            val pendingMissing =
+                missingVehicles.remove(
+                    key
+                )
 
             val previousVehicle =
                 previousVehicles[
@@ -175,25 +148,123 @@ class QueueMovementTracker {
                 ]
 
             /*
-             * Машины не было в предыдущем снимке.
-             *
-             * Значит фиксируем появление
-             * и обязательно сохраняем позицию,
-             * на которой она появилась.
+             * Если машины не было
+             * в предыдущем снимке.
              */
             if (
                 previousVehicle == null
             ) {
 
+                /*
+                 * Если она отсутствовала только
+                 * один цикл и снова появилась,
+                 * это считаем временным сбоем API,
+                 * а не новым ARRIVAL.
+                 */
+                if (
+                    pendingMissing != null
+                ) {
+
+                    val lastKnown =
+                        pendingMissing.vehicle
+
+                    val positionChanged =
+                        lastKnown.position !=
+                            currentVehicle.position
+
+                    val statusChanged =
+                        lastKnown.status !=
+                            currentVehicle.status
+
+                    val becameCalled =
+                        lastKnown.status != 3 &&
+                            currentVehicle.status == 3
+
+                    if (
+                        positionChanged
+                    ) {
+
+                        events +=
+                            createEvent(
+                                snapshot =
+                                    currentSnapshot,
+                                vehicle =
+                                    currentVehicle,
+                                previousVehicle =
+                                    lastKnown,
+                                eventType =
+                                    VehicleEventType.MOVE
+                            )
+                    }
+
+                    if (
+                        becameCalled
+                    ) {
+
+                        events +=
+                            createEvent(
+                                snapshot =
+                                    currentSnapshot,
+                                vehicle =
+                                    currentVehicle,
+                                previousVehicle =
+                                    lastKnown,
+                                eventType =
+                                    VehicleEventType.CALLED
+                            )
+
+                    } else if (
+                        statusChanged
+                    ) {
+
+                        events +=
+                            createEvent(
+                                snapshot =
+                                    currentSnapshot,
+                                vehicle =
+                                    currentVehicle,
+                                previousVehicle =
+                                    lastKnown,
+                                eventType =
+                                    VehicleEventType.STATUS_CHANGE
+                            )
+                    }
+
+                    if (
+                        positionChanged ||
+                        statusChanged
+                    ) {
+
+                        movements +=
+                            VehicleMovement(
+                                checkpointId =
+                                    checkpointId,
+                                registrationNumber =
+                                    currentVehicle.registrationNumber,
+                                timestamp =
+                                    currentSnapshot.timestamp,
+                                previousPosition =
+                                    lastKnown.position,
+                                currentPosition =
+                                    currentVehicle.position,
+                                status =
+                                    currentVehicle.status
+                            )
+                    }
+
+                    continue
+                }
+
+                /*
+                 * Настоящее новое появление.
+                 */
                 events +=
                     createArrivalEvent(
-                        currentSnapshot,
-                        currentVehicle
+                        snapshot =
+                            currentSnapshot,
+                        vehicle =
+                            currentVehicle
                     )
-
-                lastKnownVehicles[
-                    key
-                ] = currentVehicle
 
                 continue
             }
@@ -206,10 +277,6 @@ class QueueMovementTracker {
                 previousVehicle.status !=
                     currentVehicle.status
 
-            /*
-             * Явный status == 3 считаем
-             * подтверждённым вызовом.
-             */
             val becameCalled =
                 previousVehicle.status != 3 &&
                     currentVehicle.status == 3
@@ -264,10 +331,6 @@ class QueueMovementTracker {
                     )
             }
 
-            /*
-             * Старый журнал movements пока
-             * продолжаем заполнять для совместимости.
-             */
             if (
                 positionChanged ||
                 statusChanged
@@ -278,8 +341,7 @@ class QueueMovementTracker {
                         checkpointId =
                             checkpointId,
                         registrationNumber =
-                            currentVehicle
-                                .registrationNumber,
+                            currentVehicle.registrationNumber,
                         timestamp =
                             currentSnapshot.timestamp,
                         previousPosition =
@@ -290,28 +352,17 @@ class QueueMovementTracker {
                             currentVehicle.status
                     )
             }
-
-            lastKnownVehicles[
-                key
-            ] = currentVehicle
         }
 
         /*
-         * Теперь ищем автомобили,
+         * 2. Находим машины,
          * которые были в предыдущем снимке,
-         * но отсутствуют в текущем.
+         * но отсутствуют сейчас.
          */
         for (
             previousVehicle in
-            previousSnapshot.vehicles
+            previousVehicles.values
         ) {
-
-            if (
-                previousVehicle.vehicleType ==
-                QueueParser.VEHICLE_TYPE_MOTORCYCLE
-            ) {
-                continue
-            }
 
             val key =
                 vehicleKey(
@@ -327,75 +378,155 @@ class QueueMovementTracker {
                 continue
             }
 
-            val missingCount =
-                (
-                    missingCounts[
-                        key
-                    ] ?: 0
-                ) + 1
-
-            missingCounts[
-                key
-            ] = missingCount
-
             /*
-             * Одно отсутствие ничего не означает.
-             *
-             * Только второе последовательное
-             * успешное отсутствие подтверждает
-             * DISAPPEARED.
+             * Это первое отсутствие.
              */
             if (
-                missingCount == 2
+                !missingVehicles.containsKey(
+                    key
+                )
             ) {
 
-                val lastKnown =
-                    lastKnownVehicles[
-                        key
-                    ] ?: previousVehicle
+                missingVehicles[
+                    key
+                ] =
+                    MissingVehicle(
+                        vehicle =
+                            previousVehicle,
+                        firstMissingTimestamp =
+                            currentSnapshot.timestamp,
+                        missingCount =
+                            1
+                    )
+            }
+        }
+
+        /*
+         * 3. Проверяем машины,
+         * которые уже отсутствовали
+         * на предыдущем цикле.
+         */
+        val pendingKeys =
+            missingVehicles.keys.toList()
+
+        for (
+            key in pendingKeys
+        ) {
+
+            val missing =
+                missingVehicles[
+                    key
+                ] ?: continue
+
+            /*
+             * Нас интересует только текущий КПП.
+             */
+            if (
+                !key.startsWith(
+                    "$checkpointId|"
+                )
+            ) {
+                continue
+            }
+
+            /*
+             * Если машина снова появилась,
+             * она уже была удалена
+             * из missingVehicles выше.
+             */
+            if (
+                currentVehicles.containsKey(
+                    key
+                )
+            ) {
+                continue
+            }
+
+            /*
+             * Если это отсутствие было создано
+             * именно на текущем цикле,
+             * пока ничего не делаем.
+             */
+            if (
+                missing.firstMissingTimestamp ==
+                currentSnapshot.timestamp
+            ) {
+                continue
+            }
+
+            val newMissingCount =
+                missing.missingCount + 1
+
+            if (
+                newMissingCount >= 2
+            ) {
+
+                val vehicle =
+                    missing.vehicle
 
                 events +=
                     VehicleEvent(
                         checkpointId =
                             checkpointId,
                         checkpointName =
-                            currentSnapshot
-                                .checkpointName,
+                            currentSnapshot.checkpointName,
                         registrationNumber =
-                            lastKnown
-                                .registrationNumber,
+                            vehicle.registrationNumber,
                         vehicleType =
-                            lastKnown.vehicleType,
+                            vehicle.vehicleType,
                         typeQueue =
-                            lastKnown.typeQueue,
+                            vehicle.typeQueue,
+
+                        /*
+                         * Время события ставим
+                         * по первому отсутствию.
+                         *
+                         * Подтверждение произошло
+                         * вторым снимком, но фактически
+                         * машина исчезла между предыдущим
+                         * присутствием и первым отсутствием.
+                         */
                         timestamp =
-                            currentSnapshot.timestamp,
+                            missing.firstMissingTimestamp,
+
                         eventType =
-                            VehicleEventType
-                                .DISAPPEARED,
+                            VehicleEventType.DISAPPEARED,
+
                         previousPosition =
-                            lastKnown.position,
+                            vehicle.position,
+
                         currentPosition =
                             null,
+
                         previousStatus =
-                            lastKnown.status,
+                            vehicle.status,
+
                         currentStatus =
                             null,
+
                         registrationDate =
-                            lastKnown
-                                .registrationDate,
+                            vehicle.registrationDate,
+
                         changedDate =
-                            lastKnown.changedDate
+                            vehicle.changedDate
+                    )
+
+                missingVehicles.remove(
+                    key
+                )
+
+            } else {
+
+                missingVehicles[
+                    key
+                ] =
+                    missing.copy(
+                        missingCount =
+                            newMissingCount
                     )
             }
         }
 
-        /*
-         * Очень важный момент:
-         *
-         * previousSnapshots обновляем только
-         * после полного сравнения.
-         */
         previousSnapshots[
             checkpointId
         ] = currentSnapshot
@@ -409,9 +540,8 @@ class QueueMovementTracker {
     }
 
     /**
-     * Старый интерфейс оставляем,
-     * чтобы проект продолжал собираться,
-     * пока QueueCollector ещё не переведён
+     * Старый интерфейс сохраняем,
+     * пока QueueCollector не переведён
      * на VehicleEvent.
      */
     fun processSnapshot(
@@ -495,9 +625,6 @@ class QueueMovementTracker {
         )
     }
 
-    /**
-     * Ключ автомобиля внутри конкретного КПП.
-     */
     private fun vehicleKey(
         checkpointId: String,
         vehicle: QueueVehicle
@@ -547,26 +674,14 @@ class QueueMovementTracker {
         val prefix =
             "$checkpointId|"
 
-        missingCounts.keys
+        missingVehicles.keys
             .filter {
                 it.startsWith(
                     prefix
                 )
             }
             .forEach {
-                missingCounts.remove(
-                    it
-                )
-            }
-
-        lastKnownVehicles.keys
-            .filter {
-                it.startsWith(
-                    prefix
-                )
-            }
-            .forEach {
-                lastKnownVehicles.remove(
+                missingVehicles.remove(
                     it
                 )
             }
@@ -576,8 +691,6 @@ class QueueMovementTracker {
 
         previousSnapshots.clear()
 
-        missingCounts.clear()
-
-        lastKnownVehicles.clear()
+        missingVehicles.clear()
     }
 }
