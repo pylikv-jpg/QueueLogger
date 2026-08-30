@@ -5,16 +5,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Основной сборщик данных QueueLogger.
- *
- * Цепочка работы:
- *
- * API
- * -> JSON
- * -> QueueSnapshot
- * -> сравнение с прошлым снимком
- * -> VehicleMovement
- * -> SQLite
+ * Выполняет один полный цикл сбора данных
+ * для выбранного пункта пропуска.
  */
 class QueueCollector(
     context: Context
@@ -34,20 +26,42 @@ class QueueCollector(
             context.applicationContext
         )
 
-    /**
-     * Результат одного опроса КПП.
-     */
     data class CollectionResult(
+
         val checkpointId: String,
+
         val checkpointName: String,
+
+        /**
+         * Сколько автомобилей сейчас
+         * находится в очереди.
+         */
         val vehicleCount: Int,
+
+        /**
+         * Сколько автомобилей изменили
+         * позицию или статус относительно
+         * предыдущего опроса.
+         */
         val movementCount: Int,
+
+        /**
+         * Общее количество сохранённых
+         * событий движения.
+         */
         val totalStoredMovements: Long,
+
+        /**
+         * Общее количество сохранённых
+         * минутных снимков очередей.
+         */
+        val totalStoredSamples: Long,
+
         val timestamp: Long
     )
 
     /**
-     * Выполнить один полный цикл сбора данных.
+     * Выполнить один опрос одного КПП.
      */
     suspend fun collectOnce(
         checkpoint: Checkpoint
@@ -60,7 +74,7 @@ class QueueCollector(
             try {
 
                 /*
-                 * 1. Получаем реальный JSON.
+                 * 1. Получаем актуальный JSON.
                  */
                 val jsonResult =
                     api.getMonitoring(
@@ -68,22 +82,27 @@ class QueueCollector(
                             checkpoint.id
                     )
 
-                if (jsonResult.isFailure) {
+                if (
+                    jsonResult.isFailure
+                ) {
 
-                    return@withContext Result.failure(
-                        jsonResult.exceptionOrNull()
-                            ?: IllegalStateException(
-                                "Неизвестная ошибка API"
-                            )
-                    )
+                    return@withContext
+                        Result.failure(
+                            jsonResult
+                                .exceptionOrNull()
+                                ?: IllegalStateException(
+                                    "Неизвестная ошибка API"
+                                )
+                        )
                 }
 
                 val json =
-                    jsonResult.getOrThrow()
+                    jsonResult
+                        .getOrThrow()
 
                 /*
-                 * 2. Превращаем JSON
-                 * в снимок очереди.
+                 * 2. Формируем полный снимок
+                 * текущего состояния очереди.
                  */
                 val snapshot =
                     parser.parseSnapshot(
@@ -95,30 +114,48 @@ class QueueCollector(
                     )
 
                 /*
-                 * 3. Сравниваем с предыдущим снимком.
+                 * 3. Каждый успешный опрос
+                 * обязательно сохраняем
+                 * как компактный queue sample.
+                 *
+                 * Даже если очередь не двигалась,
+                 * это важная статистическая информация.
                  */
-                val movements =
-                    movementTracker.processSnapshot(
-                        snapshot
-                    )
+                database.saveQueueSample(
+                    snapshot
+                )
 
                 /*
-                 * 4. Сохраняем найденные изменения
-                 * в постоянную SQLite-базу.
+                 * 4. Сравниваем с предыдущим снимком
+                 * и получаем только реальные изменения.
+                 */
+                val movements =
+                    movementTracker
+                        .processSnapshot(
+                            snapshot
+                        )
+
+                /*
+                 * 5. Сохраняем изменения автомобилей.
                  */
                 database.saveMovements(
                     movements
                 )
 
                 /*
-                 * 5. Получаем текущее количество
-                 * накопленных записей.
+                 * 6. Получаем общую статистику базы.
                  */
-                val totalStored =
-                    database.getMovementCount()
+                val totalStoredMovements =
+                    database
+                        .getMovementCount()
+
+                val totalStoredSamples =
+                    database
+                        .getQueueSampleCount()
 
                 Result.success(
                     CollectionResult(
+
                         checkpointId =
                             checkpoint.id,
 
@@ -126,42 +163,65 @@ class QueueCollector(
                             checkpoint.name,
 
                         vehicleCount =
-                            snapshot.vehicles.size,
+                            snapshot.vehicleCount,
 
                         movementCount =
                             movements.size,
 
                         totalStoredMovements =
-                            totalStored,
+                            totalStoredMovements,
+
+                        totalStoredSamples =
+                            totalStoredSamples,
 
                         timestamp =
                             snapshot.timestamp
                     )
                 )
 
-            } catch (e: Exception) {
+            } catch (
+                exception: Exception
+            ) {
 
-                Result.failure(e)
+                Result.failure(
+                    exception
+                )
             }
         }
     }
 
     /**
-     * Получить количество накопленных
-     * записей движения.
+     * Количество сохранённых движений.
      */
-    suspend fun getStoredMovementCount(): Long {
+    suspend fun getStoredMovementCount():
+        Long {
 
         return withContext(
             Dispatchers.IO
         ) {
 
-            database.getMovementCount()
+            database
+                .getMovementCount()
         }
     }
 
     /**
-     * Получить последние движения.
+     * Количество сохранённых снимков очередей.
+     */
+    suspend fun getStoredQueueSampleCount():
+        Long {
+
+        return withContext(
+            Dispatchers.IO
+        ) {
+
+            database
+                .getQueueSampleCount()
+        }
+    }
+
+    /**
+     * Последние события движения.
      */
     suspend fun getRecentMovements(
         limit: Int = 100
@@ -171,16 +231,19 @@ class QueueCollector(
             Dispatchers.IO
         ) {
 
-            database.getRecentMovements(
-                limit
-            )
+            database
+                .getRecentMovements(
+                    limit
+                )
         }
     }
 
     /**
-     * Очистить только временную точку сравнения.
+     * Сбросить временную точку сравнения
+     * только для одного КПП.
      *
-     * Записи SQLite при этом НЕ удаляются.
+     * Данные из SQLite при этом
+     * не удаляются.
      */
     fun resetCheckpoint(
         checkpointId: String
@@ -192,9 +255,10 @@ class QueueCollector(
     }
 
     /**
-     * Очистить все временные точки сравнения.
+     * Сбросить все временные
+     * точки сравнения.
      *
-     * Накопленная база SQLite остаётся.
+     * Историческая база сохраняется.
      */
     fun resetAllTracking() {
 
