@@ -12,9 +12,11 @@ class QueueCollector(
     context: Context
 ) {
 
-    private val api = QueueApi()
+    private val api =
+        QueueApi()
 
-    private val parser = QueueParser()
+    private val parser =
+        QueueParser()
 
     private val movementTracker =
         QueueMovementTracker()
@@ -28,9 +30,24 @@ class QueueCollector(
         val checkpointId: String,
         val checkpointName: String,
         val vehicleCount: Int,
+
+        /**
+         * Количество старых movement-записей,
+         * созданных на этом цикле.
+         */
         val movementCount: Int,
+
+        /**
+         * Количество новых полных событий
+         * ARRIVAL / MOVE / CALLED /
+         * STATUS_CHANGE / DISAPPEARED
+         * на этом цикле.
+         */
+        val eventCount: Int,
+
         val totalStoredMovements: Long,
         val totalStoredSamples: Long,
+        val totalStoredEvents: Long,
         val timestamp: Long
     )
 
@@ -53,17 +70,12 @@ class QueueCollector(
                             checkpoint.id
                     )
 
-                /*
-                 * Если запрос завершился ошибкой,
-                 * выбрасываем её внутрь try.
-                 * Catch ниже преобразует её
-                 * обратно в Result.failure.
-                 */
                 val json =
                     apiResult.getOrThrow()
 
                 /*
-                 * 2. Разбираем полный снимок очереди.
+                 * 2. Разбираем полный
+                 * снимок очереди.
                  */
                 val snapshot =
                     parser.parseSnapshot(
@@ -76,34 +88,58 @@ class QueueCollector(
 
                 /*
                  * 3. Сохраняем компактный
-                 * минутный снимок очереди.
-                 *
-                 * Он сохраняется даже тогда,
-                 * когда автомобили не двигались.
+                 * минутный снимок.
                  */
                 database.saveQueueSample(
                     snapshot
                 )
 
                 /*
-                 * 4. Определяем изменения
-                 * относительно предыдущего опроса.
+                 * 4. Получаем полную историю
+                 * изменений относительно
+                 * предыдущего снимка.
                  */
-                val movements =
+                val trackingResult =
                     movementTracker
-                        .processSnapshot(
+                        .processSnapshotDetailed(
                             snapshot
                         )
 
                 /*
-                 * 5. Сохраняем движения.
+                 * 5. Старый журнал движений
+                 * продолжаем сохранять,
+                 * чтобы не ломать уже
+                 * существующую статистику.
                  */
                 database.saveMovements(
-                    movements
+                    trackingResult.movements
                 )
 
                 /*
-                 * 6. Получаем общие счётчики.
+                 * 6. Сохраняем новую
+                 * полноценную историю событий.
+                 *
+                 * Здесь уже фиксируются:
+                 *
+                 * ARRIVAL — появление
+                 * с начальной позицией;
+                 *
+                 * MOVE — изменение позиции;
+                 *
+                 * STATUS_CHANGE;
+                 *
+                 * CALLED — status == 3;
+                 *
+                 * DISAPPEARED —
+                 * подтверждённое исчезновение.
+                 */
+                database.saveVehicleEvents(
+                    trackingResult.events
+                )
+
+                /*
+                 * 7. Получаем накопленные
+                 * счётчики базы.
                  */
                 val totalStoredMovements =
                     database
@@ -113,23 +149,48 @@ class QueueCollector(
                     database
                         .getQueueSampleCount()
 
+                val totalStoredEvents =
+                    database
+                        .getVehicleEventCount()
+
                 /*
-                 * 7. Возвращаем результат опроса.
+                 * 8. Возвращаем результат
+                 * текущего опроса.
                  */
                 Result.success(
                     CollectionResult(
                         checkpointId =
                             checkpoint.id,
+
                         checkpointName =
                             checkpoint.name,
+
                         vehicleCount =
                             snapshot.vehicleCount,
+
                         movementCount =
-                            movements.size,
+                            trackingResult
+                                .movements
+                                .size,
+
+                        eventCount =
+                            trackingResult
+                                .events
+                                .count {
+                                    it.vehicleType !=
+                                        QueueParser
+                                            .VEHICLE_TYPE_MOTORCYCLE
+                                },
+
                         totalStoredMovements =
                             totalStoredMovements,
+
                         totalStoredSamples =
                             totalStoredSamples,
+
+                        totalStoredEvents =
+                            totalStoredEvents,
+
                         timestamp =
                             snapshot.timestamp
                     )
@@ -146,7 +207,8 @@ class QueueCollector(
         }
 
     /**
-     * Количество сохранённых движений.
+     * Количество сохранённых
+     * старых движений.
      */
     suspend fun getStoredMovementCount():
         Long =
@@ -157,8 +219,7 @@ class QueueCollector(
         }
 
     /**
-     * Количество сохранённых
-     * минутных снимков очереди.
+     * Количество минутных снимков.
      */
     suspend fun getStoredQueueSampleCount():
         Long =
@@ -169,7 +230,19 @@ class QueueCollector(
         }
 
     /**
-     * Последние движения автомобилей.
+     * Количество полных событий
+     * автомобилей.
+     */
+    suspend fun getStoredVehicleEventCount():
+        Long =
+        withContext(Dispatchers.IO) {
+
+            database
+                .getVehicleEventCount()
+        }
+
+    /**
+     * Последние старые движения.
      */
     suspend fun getRecentMovements(
         limit: Int = 100
@@ -183,7 +256,9 @@ class QueueCollector(
         }
 
     /**
-     * Сбросить точку сравнения одного КПП.
+     * Сбросить точку сравнения
+     * одного КПП.
+     *
      * История SQLite не удаляется.
      */
     fun resetCheckpoint(
@@ -196,7 +271,9 @@ class QueueCollector(
     }
 
     /**
-     * Сбросить все временные точки сравнения.
+     * Сбросить все временные
+     * точки сравнения.
+     *
      * История SQLite остаётся.
      */
     fun resetAllTracking() {
