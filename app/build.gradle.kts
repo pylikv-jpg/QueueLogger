@@ -12,15 +12,32 @@ android {
         applicationId = "com.pylikv.queuelogger"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.1.0"
+
+        versionCode = 3
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        create("release") {
+            val keystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+            val signingPassword = System.getenv("ANDROID_SIGNING_PASSWORD")
+
+            if (!keystorePath.isNullOrBlank() && !signingPassword.isNullOrBlank()) {
+                storeFile = file(keystorePath)
+                storePassword = signingPassword
+                keyAlias = "queuelogger"
+                keyPassword = signingPassword
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
+
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
