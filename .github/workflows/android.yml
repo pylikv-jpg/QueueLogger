@@ -28,14 +28,26 @@ jobs:
       - name: Restore permanent signing keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
         run: |
-          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/QueueLogger-release.jks"
+          test -n "$KEYSTORE_BASE64"
+          test -n "$SIGNING_PASSWORD"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/QueueLogger-release.jks"
 
       - name: Build signed release APK
         env:
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/QueueLogger-release.jks
           ANDROID_SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
         run: gradle assembleRelease
+
+      - name: Verify APK signature
+        run: |
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          echo "Using apksigner: $APKSIGNER"
+          "$APKSIGNER" verify \
+            --verbose \
+            --print-certs \
+            app/build/outputs/apk/release/app-release.apk
 
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
