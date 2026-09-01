@@ -17,9 +17,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,10 +36,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
 
@@ -55,9 +64,7 @@ class MainActivity : ComponentActivity() {
 
 /**
  * Все пункты пропуска,
- * которые QueueLogger будет контролировать.
- *
- * UUID взяты из рабочей версии QueueWatch.
+ * которые QueueLogger контролирует.
  */
 private val ALL_CHECKPOINTS =
     listOf(
@@ -156,15 +163,32 @@ fun MainScreen() {
         )
     }
 
-    /**
-     * После ответа пользователя
-     * на запрос разрешения уведомлений
-     * всё равно запускаем сервис.
-     *
-     * Разрешение влияет на отображение
-     * обычных уведомлений, но пользователь
-     * сам решает, выдавать его или нет.
-     */
+    var tokenText by remember {
+        mutableStateOf("")
+    }
+
+    var tokenConfigured by remember {
+
+        mutableStateOf(
+            GitHubSync.hasToken(
+                context
+            )
+        )
+    }
+
+    var syncStatus by remember {
+
+        mutableStateOf(
+            buildSyncStatusText(
+                context
+            )
+        )
+    }
+
+    var syncRunning by remember {
+        mutableStateOf(false)
+    }
+
     val notificationPermissionLauncher =
         rememberLauncherForActivityResult(
             contract =
@@ -187,6 +211,9 @@ fun MainScreen() {
         modifier =
             Modifier
                 .fillMaxSize()
+                .verticalScroll(
+                    rememberScrollState()
+                )
                 .padding(
                     24.dp
                 ),
@@ -195,8 +222,15 @@ fun MainScreen() {
             Alignment.CenterHorizontally,
 
         verticalArrangement =
-            Arrangement.Center
+            Arrangement.Top
     ) {
+
+        Spacer(
+            modifier =
+                Modifier.height(
+                    18.dp
+                )
+        )
 
         Text(
             text =
@@ -212,7 +246,7 @@ fun MainScreen() {
         Spacer(
             modifier =
                 Modifier.height(
-                    12.dp
+                    10.dp
                 )
         )
 
@@ -239,7 +273,10 @@ fun MainScreen() {
                 "Контролируется 7 пунктов пропуска",
 
             fontSize =
-                15.sp
+                15.sp,
+
+            fontWeight =
+                FontWeight.SemiBold
         )
 
         Spacer(
@@ -263,7 +300,7 @@ fun MainScreen() {
         Spacer(
             modifier =
                 Modifier.height(
-                    32.dp
+                    28.dp
                 )
         )
 
@@ -284,7 +321,7 @@ fun MainScreen() {
         Spacer(
             modifier =
                 Modifier.height(
-                    24.dp
+                    18.dp
                 )
         )
 
@@ -373,19 +410,37 @@ fun MainScreen() {
         Spacer(
             modifier =
                 Modifier.height(
-                    18.dp
+                    28.dp
                 )
         )
 
         Text(
             text =
-                if (collectionRunning) {
+                "Синхронизация QueueLoggerData",
 
-                    "Приложение можно закрыть. Сбор продолжится в фоновом режиме."
+            fontSize =
+                20.sp,
+
+            fontWeight =
+                FontWeight.Bold
+        )
+
+        Spacer(
+            modifier =
+                Modifier.height(
+                    10.dp
+                )
+        )
+
+        Text(
+            text =
+                if (tokenConfigured) {
+
+                    "GitHub token сохранён на устройстве"
 
                 } else {
 
-                    "После запуска QueueLogger будет автоматически опрашивать все пункты пропуска."
+                    "Для автоматической отправки необходимо один раз сохранить GitHub token"
                 },
 
             fontSize =
@@ -394,6 +449,324 @@ fun MainScreen() {
             textAlign =
                 TextAlign.Center
         )
+
+        if (!tokenConfigured) {
+
+            Spacer(
+                modifier =
+                    Modifier.height(
+                        14.dp
+                    )
+            )
+
+            OutlinedTextField(
+                value =
+                    tokenText,
+
+                onValueChange = {
+                    tokenText =
+                        it
+                },
+
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                label = {
+                    Text(
+                        "GitHub token"
+                    )
+                },
+
+                singleLine =
+                    true,
+
+                visualTransformation =
+                    PasswordVisualTransformation(),
+
+                keyboardOptions =
+                    KeyboardOptions(
+                        keyboardType =
+                            KeyboardType.Password
+                    )
+            )
+
+            Spacer(
+                modifier =
+                    Modifier.height(
+                        10.dp
+                    )
+            )
+
+            Button(
+                onClick = {
+
+                    val value =
+                        tokenText.trim()
+
+                    if (value.isNotBlank()) {
+
+                        GitHubSync.saveToken(
+                            context,
+                            value
+                        )
+
+                        tokenText =
+                            ""
+
+                        tokenConfigured =
+                            GitHubSync.hasToken(
+                                context
+                            )
+
+                        syncStatus =
+                            "Token сохранён. Можно выполнить первую отправку."
+                    }
+                },
+
+                modifier =
+                    Modifier.fillMaxWidth()
+            ) {
+
+                Text(
+                    text =
+                        "Сохранить token"
+                )
+            }
+
+        } else {
+
+            Spacer(
+                modifier =
+                    Modifier.height(
+                        12.dp
+                    )
+            )
+
+            Button(
+                onClick = {
+
+                    GitHubSync.clearToken(
+                        context
+                    )
+
+                    tokenConfigured =
+                        false
+
+                    tokenText =
+                        ""
+
+                    syncStatus =
+                        "Token удалён с устройства"
+                },
+
+                modifier =
+                    Modifier.fillMaxWidth(),
+
+                colors =
+                    ButtonDefaults.buttonColors(
+                        containerColor =
+                            Color(
+                                0xFF6D5E00
+                            )
+                    )
+            ) {
+
+                Text(
+                    text =
+                        "Удалить сохранённый token"
+                )
+            }
+        }
+
+        Spacer(
+            modifier =
+                Modifier.height(
+                    18.dp
+                )
+        )
+
+        Text(
+            text =
+                syncStatus,
+
+            fontSize =
+                14.sp,
+
+            textAlign =
+                TextAlign.Center
+        )
+
+        Spacer(
+            modifier =
+                Modifier.height(
+                    14.dp
+                )
+        )
+
+        Button(
+            onClick = {
+
+                if (
+                    !tokenConfigured ||
+                    syncRunning
+                ) {
+
+                    return@Button
+                }
+
+                syncRunning =
+                    true
+
+                syncStatus =
+                    "Выполняется отправка..."
+
+                Thread {
+
+                    val manager =
+                        QueueSyncManager(
+                            context.applicationContext
+                        )
+
+                    try {
+
+                        val result =
+                            manager.syncOnce()
+
+                        (context as? ComponentActivity)
+                            ?.runOnUiThread {
+
+                                syncRunning =
+                                    false
+
+                                syncStatus =
+                                    result.message +
+                                        "\n" +
+                                        buildSyncStatusText(
+                                            context
+                                        )
+                            }
+
+                    } catch (
+                        e: Exception
+                    ) {
+
+                        (context as? ComponentActivity)
+                            ?.runOnUiThread {
+
+                                syncRunning =
+                                    false
+
+                                syncStatus =
+                                    "Ошибка: " +
+                                        (
+                                            e.message
+                                                ?: e.javaClass.simpleName
+                                        )
+                            }
+
+                    } finally {
+
+                        manager.close()
+                    }
+                }.start()
+            },
+
+            enabled =
+                tokenConfigured &&
+                    !syncRunning,
+
+            modifier =
+                Modifier.fillMaxWidth()
+        ) {
+
+            Text(
+                text =
+                    if (syncRunning) {
+
+                        "Отправка..."
+
+                    } else {
+
+                        "Отправить сейчас"
+                    }
+            )
+        }
+
+        Spacer(
+            modifier =
+                Modifier.height(
+                    18.dp
+                )
+        )
+
+        Text(
+            text =
+                "При работающем сборе новые данные автоматически отправляются примерно каждые 30 минут. При отсутствии интернета данные остаются в локальной базе.",
+
+            fontSize =
+                13.sp,
+
+            textAlign =
+                TextAlign.Center
+        )
+
+        Spacer(
+            modifier =
+                Modifier.height(
+                    30.dp
+                )
+        )
+    }
+}
+
+/**
+ * Текст диагностического состояния
+ * синхронизации.
+ */
+private fun buildSyncStatusText(
+    context: Context
+): String {
+
+    val lastSuccess =
+        GitHubSync.getLastSuccess(
+            context
+        )
+
+    val lastError =
+        GitHubSync.getLastError(
+            context
+        )
+
+    val successText =
+        if (lastSuccess > 0L) {
+
+            val formatter =
+                SimpleDateFormat(
+                    "dd.MM.yyyy HH:mm:ss",
+                    Locale.getDefault()
+                )
+
+            "Последняя успешная отправка: " +
+                formatter.format(
+                    Date(
+                        lastSuccess
+                    )
+                )
+
+        } else {
+
+            "Успешных отправок ещё не было"
+        }
+
+    return if (
+        lastError.isNotBlank()
+    ) {
+
+        "$successText\nПоследняя ошибка: $lastError"
+
+    } else {
+
+        successText
     }
 }
 
