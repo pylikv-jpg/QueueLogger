@@ -11,12 +11,19 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 
 /**
  * Постоянный foreground service QueueLogger.
  *
  * Сбор данных продолжается независимо
  * от того, открыт экран приложения или нет.
+ *
+ * Дополнительно сервис периодически
+ * отправляет накопленные данные
+ * в QueueLoggerData.
  */
 class QueueLoggerService : Service() {
 
@@ -54,10 +61,31 @@ class QueueLoggerService : Service() {
 
         private const val SEPARATOR =
             "\u001F"
+
+        /**
+         * Первая попытка синхронизации
+         * через одну минуту после запуска.
+         */
+        private const val FIRST_SYNC_DELAY_MINUTES =
+            1L
+
+        /**
+         * Далее синхронизация выполняется
+         * каждые 30 минут.
+         */
+        private const val SYNC_INTERVAL_MINUTES =
+            30L
     }
 
     private lateinit var pollingManager:
         QueuePollingManager
+
+    private lateinit var syncManager:
+        QueueSyncManager
+
+    private var syncExecutor:
+        ScheduledExecutorService? =
+        null
 
     override fun onCreate() {
 
@@ -67,6 +95,11 @@ class QueueLoggerService : Service() {
 
         pollingManager =
             QueuePollingManager(
+                applicationContext
+            )
+
+        syncManager =
+            QueueSyncManager(
                 applicationContext
             )
     }
@@ -107,6 +140,8 @@ class QueueLoggerService : Service() {
                         checkpoints
                     )
 
+                    startAutomaticSync()
+
                 } else {
 
                     val savedCheckpoints =
@@ -121,6 +156,8 @@ class QueueLoggerService : Service() {
                         startCollection(
                             savedCheckpoints
                         )
+
+                        startAutomaticSync()
 
                     } else {
 
@@ -147,6 +184,8 @@ class QueueLoggerService : Service() {
                     startCollection(
                         savedCheckpoints
                     )
+
+                    startAutomaticSync()
 
                 } else {
 
@@ -301,6 +340,90 @@ class QueueLoggerService : Service() {
     }
 
     /**
+     * Запустить отдельный цикл
+     * автоматической отправки в GitHub.
+     *
+     * Он не мешает циклу сбора данных:
+     * синхронизация работает в своём потоке.
+     */
+    private fun startAutomaticSync() {
+
+        /*
+         * Не создаём второй таймер,
+         * если сервис получил ACTION_START
+         * повторно.
+         */
+        if (
+            syncExecutor != null
+        ) {
+
+            return
+        }
+
+        val executor =
+            Executors
+                .newSingleThreadScheduledExecutor()
+
+        syncExecutor =
+            executor
+
+        executor.scheduleWithFixedDelay(
+            {
+
+                try {
+
+                    /*
+                     * Если токен ещё не введён,
+                     * ничего страшного:
+                     * данные продолжают сохраняться
+                     * локально.
+                     *
+                     * Через 30 минут будет
+                     * следующая попытка.
+                     */
+                    if (
+                        GitHubSync.hasToken(
+                            applicationContext
+                        )
+                    ) {
+
+                        syncManager.syncOnce()
+                    }
+
+                } catch (
+                    ignored: Exception
+                ) {
+
+                    /*
+                     * Ошибка синхронизации
+                     * не должна останавливать
+                     * основной сбор очереди.
+                     *
+                     * Следующая попытка
+                     * произойдёт автоматически.
+                     */
+                }
+
+            },
+            FIRST_SYNC_DELAY_MINUTES,
+            SYNC_INTERVAL_MINUTES,
+            TimeUnit.MINUTES
+        )
+    }
+
+    /**
+     * Остановить цикл синхронизации.
+     */
+    private fun stopAutomaticSync() {
+
+        syncExecutor
+            ?.shutdownNow()
+
+        syncExecutor =
+            null
+    }
+
+    /**
      * Остановить сбор данных вручную.
      */
     private fun stopCollection() {
@@ -311,6 +434,8 @@ class QueueLoggerService : Service() {
 
             pollingManager.stop()
         }
+
+        stopAutomaticSync()
 
         clearSavedCheckpoints()
 
@@ -681,6 +806,15 @@ class QueueLoggerService : Service() {
         ) {
 
             pollingManager.stop()
+        }
+
+        stopAutomaticSync()
+
+        if (
+            ::syncManager.isInitialized
+        ) {
+
+            syncManager.close()
         }
 
         super.onDestroy()
